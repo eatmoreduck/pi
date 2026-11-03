@@ -195,18 +195,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
+	// 模型运行时：模型目录、鉴权、请求路由
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
-
+	// 设置：默认模型、主题、工具开关等
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
 	if (!resourceLoader) {
+		// 资源加载器：扩展、技能、prompt 模板、系统提示词
 		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
-
-	// Check if session has existing data to restore
+	// 会话里已有消息时，恢复模型和 thinking level
 	const existingSession = sessionManager.buildSessionContext();
 	const hasExistingSession = existingSession.messages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
@@ -400,6 +401,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 	};
 
+	// 真正创建 Agent（循环内核）
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: "",
@@ -409,6 +411,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			messages: existingSession.messages,
 		},
 		convertToLlm: convertToLlmWithBlockImages,
+		// 注入流式请求函数：转给 ModelRuntime
 		streamFn: async (model, context, options) => {
 			const requestOptions = buildRequestOptions(options);
 			// Compaction and summaries use their own routing ids; only session requests
@@ -452,6 +455,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
+	// 构造 AgentSession：接管 Agent 的事件、落盘、压缩与扩展
 	const session = new AgentSession({
 		agent,
 		sessionManager,

@@ -572,16 +572,21 @@ export interface MainOptions {
 }
 
 export async function main(args: string[], options?: MainOptions) {
+	// 重置启动计时点，配合 time()/printTimings 使用
 	resetTimings();
 	// Commands and startup selectors can load user-authored themes before runtime creation.
+	// 注册主题 JSON 的校验函数（加载主题时才会调用）
 	setThemeJsonValidator(validateThemeJson);
+	// 内置扩展工厂 + 调用方注入的扩展工厂
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
+	// 读取 --offline 或 PI_OFFLINE 环境变量
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
 		process.env.PI_OFFLINE = "1";
 		process.env.PI_SKIP_VERSION_CHECK = "1";
 	}
 
+	// 先处理 auth 子命令（login/logout/status 等），处理完直接退出
 	if (await runAuthCommand(args)) {
 		return;
 	}
@@ -603,6 +608,7 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		process.exit(1);
 	}
+	// Pi 的配置目录（默认 ~/.pi/agent）
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
@@ -625,12 +631,13 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	// mcp 子命令走独立的懒加载入口
 	if (args[0] === "mcp") {
 		const { runMcpCommand } = await loadMcpCommand();
 		process.exitCode = await runMcpCommand(args.slice(1), { cwd, agentDir });
 		return;
 	}
-
+	// 这里才是正儿八经的解析命令行的入参
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
@@ -641,6 +648,7 @@ export async function main(args: string[], options?: MainOptions) {
 			process.exit(1);
 		}
 	}
+	// 记录 parseArgs 的耗时打点
 	time("parseArgs");
 
 	if (parsed.version) {
@@ -680,7 +688,9 @@ export async function main(args: string[], options?: MainOptions) {
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);
 	time("runMigrations");
 
+	// 启动阶段用的 SettingsManager（此时还不知道最终 cwd）
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
+	// 收集设置诊断（配置错误、迁移提示等）
 	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
 
 	// Experimental first-time setup: theme choice and analytics opt-in.
@@ -704,6 +714,7 @@ export async function main(args: string[], options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
+	// 用 cwd、sessionDir 和启动设置创建或打开 SessionManager；--continue/--session 在这里生效
 	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
@@ -726,6 +737,7 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 		sessionManager.appendSessionInfo(name);
 	}
+	// 记录会话管理器创建的耗时
 	time("createSessionManager");
 
 	const trustStore = new ProjectTrustStore(agentDir);
@@ -741,6 +753,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+
+	// 这里只是声明工厂函数，不会执行；真正调用在下面的 createAgentSessionRuntime
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -848,6 +862,7 @@ export async function main(args: string[], options?: MainOptions) {
 			}
 		}
 
+		// 最终调用底层 sdk.ts 的 createAgentSession
 		const created = await createAgentSessionFromServices({
 			services,
 			sessionManager,
@@ -872,6 +887,8 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
+
+	// 用工厂创建 AgentSessionRuntime；工厂在这里被第一次调用
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
@@ -935,6 +952,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("createAgentSession");
 
+	// 非交互模式下必须先有可用模型
 	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));
 		process.exit(1);
